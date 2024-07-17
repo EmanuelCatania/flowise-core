@@ -1,0 +1,132 @@
+services:
+    postgres_db_flowise:
+        image: postgres:16-alpine
+        container_name: postgres_db_flowise
+        env_file: "./postgres_flowise.env"
+        healthcheck:
+          test: ["CMD-SHELL", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB -p 5555"]
+          interval: 10s
+          timeout: 5s
+          retries: 5
+        ports:
+          - "5555:5555"
+        networks:
+          - stack_core_network
+        volumes:
+          - postgres_flowise_volume:${DB_VOLUME_PATH:-/var/lib/postgresql/data}
+        restart: unless-stopped
+        command: -p 5555
+
+    postgres_db_langfuse:
+        image: postgres:16-alpine
+        container_name: postgres_db_langfuse
+        env_file: "./postgres_langfuse.env"
+        healthcheck:
+          test: ["CMD-SHELL", "pg_isready -U $POSTGRES_USER_LANGFUSE -d $POSTGRES_DB_LANGFUSE -p 5556"]
+          interval: 10s
+          timeout: 5s
+          retries: 5
+        ports:
+          - "5556:5556"
+        networks:
+          - stack_core_network
+        volumes:
+          - postgres_langfuse_volume:${DB_VOLUME_PATH:-/var/lib/postgresql/data}
+        restart: unless-stopped
+        command: -p 5556
+
+    flowise:
+        image: flowiseai/flowise:1.8.2
+        container_name: flowise
+        env_file: "./.env"
+        hostname: flowise
+        healthcheck:
+          test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000"]
+          interval: 10s
+          timeout: 5s
+          retries: 5
+        ports:
+            - "3000:3000"
+        volumes:
+            - "../macro-stack-ai-volumes/flowise:${VOLUME_PATH}"
+        entrypoint: /bin/sh -c "sleep 3; flowise start"
+        restart: always
+        networks:
+            - stack_core_network
+        depends_on:
+          postgres_db_flowise:
+            condition: service_healthy
+
+    qdrant:
+        image: qdrant/qdrant:latest
+        restart: always
+        container_name: qdrant_vectorstore
+        ports:
+          - "6333:6333"
+          - "6334:6334"
+        expose:
+          - "6333"
+          - "6334"
+          - "6335"
+        configs:
+          - source: qdrant_config
+            target: /qdrant/config/production.yaml
+        networks:
+            - stack_core_network
+        volumes:
+          - "./volumes/qdrant:/qdrant/storage"
+        depends_on:
+          postgres_db_flowise:
+            condition: service_healthy
+          flowise:
+            condition: service_healthy
+
+    ollama:
+        container_name: ollama
+        image: ollama/ollama
+        healthcheck:
+          test: ollama --version || exit 1
+          interval: 10s
+        ports:
+          - "11434:11434"
+        volumes:
+          - "../macro-stack-ai-volumes/ollama:/root/.ollama"
+        networks:
+          - stack_core_network
+        environment:
+          - OLLAMA_MODELS=../macro-stack-ai-volumes/ollama
+
+    langfuse:
+        image: langfuse/langfuse:2
+        container_name: langfuse
+        env_file: "./langfuse.env"
+        healthcheck:
+          test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:${PORT}"]
+          interval: 10s
+          timeout: 5s
+          retries: 5
+        depends_on:
+          postgres_db_langfuse:
+            condition: service_healthy
+          flowise:
+            condition: service_healthy
+        ports:
+          - "3004:3004"
+        networks:
+            - stack_core_network
+
+
+volumes:
+  postgres_flowise_volume:
+  postgres_langfuse_volume:
+  flowise_volume:
+  qdrant_data:
+
+networks:
+    stack_core_network:
+        driver: bridge
+
+configs:
+  qdrant_config:
+    content: |
+      log_level: INFO
